@@ -6,7 +6,7 @@ from googleapiclient.http import MediaIoBaseUpload
 import pandas as pd
 import io
 
-# --- 1. 認証設定（Secretsから新しい鍵を読み込む） ---
+# --- 1. 認証設定（Secretsから鍵を読み込む） ---
 def get_gspread_client():
     scopes = [
         'https://www.googleapis.com/auth/spreadsheets',
@@ -32,7 +32,30 @@ def load_data(sheet_url):
         df["達成日時"] = pd.to_datetime(df["達成日時"], errors='coerce').dt.strftime('%Y-%m-%d').replace('NaT', '')
     return df, worksheet, creds
 
-# --- 3. メインUI ---
+# --- 3. アップロード処理関数 ---
+def upload_to_drive_and_update_sheet(uploaded_file, row_idx, col_name, creds, worksheet, df, no, waza_name):
+    try:
+        with st.spinner(f"{col_name}をアップロード中..."):
+            drive_service = build('drive', 'v3', credentials=creds)
+            file_metadata = {'name': f"No{no}_{waza_name}_{col_name}_{uploaded_file.name}"}
+            media = MediaIoBaseUpload(io.BytesIO(uploaded_file.read()), mimetype=uploaded_file.type, resumable=True)
+            
+            # Googleドライブへアップロード
+            file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
+            file_id = file.get('id')
+            
+            # 閲覧権限を「リンクを知っている全員」に設定
+            drive_service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'viewer'}).execute()
+            video_url = file.get('webViewLink')
+            
+            # スプレッドシートの該当セルを更新
+            col_idx = df.columns.get_loc(col_name) + 1
+            worksheet.update_cell(row_idx + 2, col_idx, video_url)
+            return True, video_url
+    except Exception as e:
+        return False, str(e)
+
+# --- 4. メインUI ---
 st.set_page_config(page_title="サッカー練習管理", layout="wide")
 
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1G539DPoba2GW68XlQfV-l2syF4Q5mOnLtULl700qAeU/edit#gid=0"
@@ -43,7 +66,7 @@ try:
     if "selected_no" not in st.session_state:
         st.session_state.selected_no = None
 
-    # --- A. 詳細画面（動画アップロード機能を追加） ---
+    # --- A. 詳細画面（アップロード枠を上下二つに分離） ---
     if st.session_state.selected_no is not None:
         no = st.session_state.selected_no
         row_idx = df[df["No"] == no].index[0]
@@ -55,46 +78,32 @@ try:
             st.rerun()
 
         st.markdown("---")
-        st.write(f"**技名:** {row_data['技名']}")
-        st.write(f"**参考動画:** {row_data['参考動画']}")
-        
-        # --- 動画アップロード機能 ---
-        st.subheader("📹 トレーニング動画のアップロード")
-        uploaded_file = st.file_uploader("動画ファイルを選択してください (mp4, movなど)", type=["mp4", "mov", "avi"])
 
-        if uploaded_file is not None:
-            if st.button("Googleドライブに保存してURLを更新"):
-                try:
-                    with st.spinner("アップロード中..."):
-                        # Google Drive APIの設定
-                        drive_service = build('drive', 'v3', credentials=creds)
-                        
-                        file_metadata = {'name': f"No{no}_{row_data['技名']}_{uploaded_file.name}"}
-                        media = MediaIoBaseUpload(io.BytesIO(uploaded_file.read()), mimetype=uploaded_file.type, resumable=True)
-                        
-                        # ドライブにファイルを保存
-                        file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
-                        file_id = file.get('id')
-                        
-                        # 誰でも閲覧できるように権限を設定（必要に応じて）
-                        drive_service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'viewer'}).execute()
-                        
-                        video_url = file.get('webViewLink')
-                        
-                        # スプレッドシートの「トレーニング動画」列（通常はE列やF列など列番号を確認してください）
-                        # 1行目はヘッダーなので、row_idx + 2 行目に書き込みます
-                        # 以下の 'トレーニング動画' がスプレッドシートの何列目にあるかを自動判定して更新
-                        col_idx = df.columns.get_loc("トレーニング動画") + 1
-                        worksheet.update_cell(row_idx + 2, col_idx, video_url)
-                        
-                        st.success(f"アップロード完了！URLを更新しました。")
-                        st.balloons()
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"アップロードエラー: {e}")
+        # --- 上部：参考動画のアップロード ---
+        st.subheader("💡 ① 参考動画のアップロード")
+        st.write(f"現在のURL: {row_data['参考動画']}")
+        up_sanko = st.file_uploader("参考動画ファイルを選択", type=["mp4", "mov"], key="sanko_up")
+        if up_sanko and st.button("参考動画として保存", key="sanko_btn"):
+            success, res = upload_to_drive_and_update_sheet(up_sanko, row_idx, "参考動画", creds, worksheet, df, no, row_data['技名'])
+            if success:
+                st.success("参考動画を更新しました！")
+                st.rerun()
+            else:
+                st.error(f"エラー: {res}")
 
         st.markdown("---")
-        st.write(f"**現在のトレーニング動画URL:** {row_data['トレーニング動画']}")
+
+        # --- 下部：トレーニング動画のアップロード ---
+        st.subheader("📹 ② トレーニング動画のアップロード")
+        st.write(f"現在のURL: {row_data['トレーニング動画']}")
+        up_train = st.file_uploader("トレーニング動画ファイルを選択", type=["mp4", "mov"], key="train_up")
+        if up_train and st.button("トレーニング動画として保存", key="train_btn"):
+            success, res = upload_to_drive_and_update_sheet(up_train, row_idx, "トレーニング動画", creds, worksheet, df, no, row_data['技名'])
+            if success:
+                st.success("トレーニング動画を更新しました！")
+                st.rerun()
+            else:
+                st.error(f"エラー: {res}")
 
     # --- B. 一覧画面 ---
     else:
