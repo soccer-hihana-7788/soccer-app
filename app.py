@@ -6,7 +6,7 @@ from googleapiclient.http import MediaIoBaseUpload
 import pandas as pd
 import io
 
-# --- 1. 認証設定（Secretsから鍵を読み込む） ---
+# --- 1. 認証設定 ---
 def get_gspread_client():
     scopes = [
         'https://www.googleapis.com/auth/spreadsheets',
@@ -32,7 +32,7 @@ def load_data(sheet_url):
         df["達成日時"] = pd.to_datetime(df["達成日時"], errors='coerce').dt.strftime('%Y-%m-%d').replace('NaT', '')
     return df, worksheet, creds
 
-# --- 3. アップロード処理関数 ---
+# --- 3. アップロード処理関数（複数対応版） ---
 def upload_to_drive_and_update_sheet(uploaded_file, row_idx, col_name, creds, worksheet, df, no, waza_name):
     try:
         with st.spinner(f"{col_name}をアップロード中..."):
@@ -40,18 +40,21 @@ def upload_to_drive_and_update_sheet(uploaded_file, row_idx, col_name, creds, wo
             file_metadata = {'name': f"No{no}_{waza_name}_{col_name}_{uploaded_file.name}"}
             media = MediaIoBaseUpload(io.BytesIO(uploaded_file.read()), mimetype=uploaded_file.type, resumable=True)
             
-            # Googleドライブへアップロード
             file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
             file_id = file.get('id')
-            
-            # 閲覧権限を「リンクを知っている全員」に設定
             drive_service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'viewer'}).execute()
-            video_url = file.get('webViewLink')
+            new_url = file.get('webViewLink')
             
-            # スプレッドシートの該当セルを更新
+            # 既存のURLを取得し、新しいURLを追加（カンマ区切り）
+            current_val = str(df.iloc[row_idx][col_name]).strip()
+            if current_val and current_val != "None":
+                updated_val = f"{current_val}, {new_url}"
+            else:
+                updated_val = new_url
+            
             col_idx = df.columns.get_loc(col_name) + 1
-            worksheet.update_cell(row_idx + 2, col_idx, video_url)
-            return True, video_url
+            worksheet.update_cell(row_idx + 2, col_idx, updated_val)
+            return True, updated_val
     except Exception as e:
         return False, str(e)
 
@@ -66,7 +69,7 @@ try:
     if "selected_no" not in st.session_state:
         st.session_state.selected_no = None
 
-    # --- A. 詳細画面（アップロード枠を上下二つに分離） ---
+    # --- A. 詳細画面 ---
     if st.session_state.selected_no is not None:
         no = st.session_state.selected_no
         row_idx = df[df["No"] == no].index[0]
@@ -79,36 +82,43 @@ try:
 
         st.markdown("---")
 
-        # --- 上部：参考動画のアップロード ---
-        st.subheader("💡 ① 参考動画のアップロード")
-        st.write(f"現在のURL: {row_data['参考動画']}")
-        up_sanko = st.file_uploader("参考動画ファイルを選択", type=["mp4", "mov"], key="sanko_up")
-        if up_sanko and st.button("参考動画として保存", key="sanko_btn"):
-            success, res = upload_to_drive_and_update_sheet(up_sanko, row_idx, "参考動画", creds, worksheet, df, no, row_data['技名'])
-            if success:
-                st.success("参考動画を更新しました！")
-                st.rerun()
-            else:
-                st.error(f"エラー: {res}")
+        # 動画セクション表示用関数
+        def render_video_section(label, col_name, emoji, key_suffix):
+            st.subheader(f"{emoji} {label}の管理")
+            current_urls = str(row_data[col_name]).split(",") if row_data[col_name] else []
+            
+            # URLの表示と削除ボタン
+            for i, url in enumerate(current_urls):
+                url = url.strip()
+                if url:
+                    cols = st.columns([0.8, 0.2])
+                    cols[0].write(f"URL {i+1}: {url}")
+                    if cols[1].button(f"削除", key=f"del_{key_suffix}_{i}"):
+                        current_urls.pop(i)
+                        new_val = ", ".join(current_urls)
+                        col_idx = df.columns.get_loc(col_name) + 1
+                        worksheet.update_cell(row_idx + 2, col_idx, new_val)
+                        st.rerun()
 
+            # 新規アップロード
+            up_file = st.file_uploader(f"{label}ファイルを追加選択", type=["mp4", "mov"], key=f"up_{key_suffix}")
+            if up_file and st.button(f"{label}を追加保存", key=f"btn_{key_suffix}"):
+                success, res = upload_to_drive_and_update_sheet(up_file, row_idx, col_name, creds, worksheet, df, no, row_data['技名'])
+                if success:
+                    st.success(f"{label}を追加しました！")
+                    st.rerun()
+                else:
+                    st.error(f"エラー: {res}")
+
+        # 上部：参考動画
+        render_video_section("① 参考動画", "参考動画", "💡", "sanko")
         st.markdown("---")
-
-        # --- 下部：トレーニング動画のアップロード ---
-        st.subheader("📹 ② トレーニング動画のアップロード")
-        st.write(f"現在のURL: {row_data['トレーニング動画']}")
-        up_train = st.file_uploader("トレーニング動画ファイルを選択", type=["mp4", "mov"], key="train_up")
-        if up_train and st.button("トレーニング動画として保存", key="train_btn"):
-            success, res = upload_to_drive_and_update_sheet(up_train, row_idx, "トレーニング動画", creds, worksheet, df, no, row_data['技名'])
-            if success:
-                st.success("トレーニング動画を更新しました！")
-                st.rerun()
-            else:
-                st.error(f"エラー: {res}")
+        # 下部：トレーニング動画
+        render_video_section("② トレーニング動画", "トレーニング動画", "📹", "train")
 
     # --- B. 一覧画面 ---
     else:
         st.title("⚽ サッカートレーニング管理一覧")
-        
         display_df = df.copy()
         display_df.insert(0, "選択", False)
         
@@ -119,8 +129,6 @@ try:
             column_config={
                 "選択": st.column_config.CheckboxColumn("選択", default=False),
                 "No": st.column_config.NumberColumn("No", disabled=True),
-                "参考動画": st.column_config.LinkColumn("参考動画"),
-                "トレーニング動画": st.column_config.LinkColumn("トレーニング動画")
             }
         )
 
@@ -133,9 +141,9 @@ try:
             final_df = current_data.fillna("")
             data_to_update = [final_df.columns.values.tolist()] + final_df.values.tolist()
             worksheet.update(data_to_update)
-            st.success("スプレッドシートを更新しました！")
+            st.success("更新しました！")
             st.rerun()
 
 except Exception as e:
-    st.error(f"接続エラーが発生しました。スプレッドシートの共有設定やSecretsを確認してください。")
-    st.info(f"エラー詳細: {e}")
+    st.error(f"接続エラーが発生しました。")
+    st.info(f"詳細: {e}")
