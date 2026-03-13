@@ -47,7 +47,7 @@ def upload_to_drive_and_update_sheet(uploaded_file, row_idx, col_name, creds, wo
             
             # 既存のURLを取得し、新しいURLを追加（カンマ区切り）
             current_val = str(df.iloc[row_idx][col_name]).strip()
-            if current_val and current_val != "None":
+            if current_val and current_val != "None" and current_val != "":
                 updated_val = f"{current_val}, {new_url}"
             else:
                 updated_val = new_url
@@ -85,20 +85,19 @@ try:
         # 動画セクション表示用関数
         def render_video_section(label, col_name, emoji, key_suffix):
             st.subheader(f"{emoji} {label}の管理")
-            current_urls = str(row_data[col_name]).split(",") if row_data[col_name] else []
+            raw_value = str(row_data[col_name])
+            current_urls = [u.strip() for u in raw_value.split(",") if u.strip() and u.strip() != "None"]
             
             # URLの表示と削除ボタン
             for i, url in enumerate(current_urls):
-                url = url.strip()
-                if url:
-                    cols = st.columns([0.8, 0.2])
-                    cols[0].write(f"URL {i+1}: {url}")
-                    if cols[1].button(f"削除", key=f"del_{key_suffix}_{i}"):
-                        current_urls.pop(i)
-                        new_val = ", ".join(current_urls)
-                        col_idx = df.columns.get_loc(col_name) + 1
-                        worksheet.update_cell(row_idx + 2, col_idx, new_val)
-                        st.rerun()
+                cols = st.columns([0.8, 0.2])
+                cols[0].write(f"URL {i+1}: {url}")
+                if cols[1].button(f"削除", key=f"del_{key_suffix}_{i}"):
+                    current_urls.pop(i)
+                    new_val = ", ".join(current_urls)
+                    col_idx = df.columns.get_loc(col_name) + 1
+                    worksheet.update_cell(row_idx + 2, col_idx, new_val)
+                    st.rerun()
 
             # 新規アップロード
             up_file = st.file_uploader(f"{label}ファイルを追加選択", type=["mp4", "mov"], key=f"up_{key_suffix}")
@@ -122,6 +121,7 @@ try:
         display_df = df.copy()
         display_df.insert(0, "選択", False)
         
+        # URL列をリンク形式として表示するための設定
         edited_df = st.data_editor(
             display_df, 
             use_container_width=True, 
@@ -129,6 +129,8 @@ try:
             column_config={
                 "選択": st.column_config.CheckboxColumn("選択", default=False),
                 "No": st.column_config.NumberColumn("No", disabled=True),
+                "参考動画": st.column_config.LinkColumn("参考動画", help="クリックして動画を表示"),
+                "トレーニング動画": st.column_config.LinkColumn("トレーニング動画", help="クリックして動画を表示"),
             }
         )
 
